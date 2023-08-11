@@ -48,7 +48,13 @@ variable "ipv4_ipam_pool_ids" {
   description = "The IDs of the IPv4 IPAM pool for allocating the VPC's CIDR."
   type        = map(string)
   default = {
-    "eu-west-1" = "ipam-pool-078f8adc131920b93",
-    "us-east-1" = "ipam-pool-078f8adc131920b93"
+    "eu-west-1" = "ipam-pool-0fb896c89307df79f",
+    "us-east-1" = "ipam-pool-0fb896c89307df79f"
   }
+}
+
+variable "should_destroy_allocation" {
+  description = "Flag to determine if the destroy allocation should be done"
+  type        = string
+  default     = "false"
 }

@@ -32,14 +32,16 @@ resource "aws_vpc" "main" {
 }
 
 resource "aws_vpc_ipv4_cidr_block_association" "secondary_cidr" {
-  for_each = { for idx, cidr in jsondecode(data.external.allocate_cidr_subnets.result["secondary_cidrs"]) : idx => cidr }
+  for_each = { for idx, cidr in split(",", data.external.allocate_cidr_subnets.result["secondary_cidrs"]) : idx => cidr }
 
+  
   vpc_id                = aws_vpc.main.id
   cidr_block            = each.value
 }
 
 data "external" "allocate_cidr_subnets" {
-  program = ["python3.8", "${path.module}/scripts/cidr_allocation.py", "create-allocation", "${local.ipam_pool_id}"]
+  
+  program = ["python3", "${path.module}/scripts/cidr_allocation.py", "create-allocation", "${local.ipam_pool_id}"]
 
   query = {
     primary_netmask  = var.primary_netmask_length
@@ -52,13 +54,19 @@ resource "aws_subnet" "dynamic_subnet" {
   for_each = local.processed_subnets
 
   cidr_block = each.value  
-  vpc_id = aws_vpc.main.vpc_id
-
+  vpc_id = aws_vpc.main.id
 
   tags = {
     Name = each.key
   }
+
+  depends_on = [ aws_vpc_ipv4_cidr_block_association.secondary_cidr]
 }
 
+data "external" "destroy_allocation" {
+  program = ["python3", "${path.module}/scripts/cidr_allocation.py", "destroy-allocation", "${local.ipam_pool_id}"]
 
-
+  query = {
+    allocation_details = data.external.allocate_cidr_subnets.result["allocation_details"]
+  }
+}

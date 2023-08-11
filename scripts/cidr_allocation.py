@@ -5,14 +5,14 @@ import boto3
 
 def allocate_cidrs_from_pool(ipam_pool_id, prefix_lengths, description=None):
     client = boto3.client('ec2')
-    allocated_cidrs = []
+    allocations = []
 
     try:
         for length in prefix_lengths:
             params = {
                 "IpamPoolId": ipam_pool_id,
                 "NetmaskLength": length,
-                "PreviewNextCidr": False # remove dry run option
+                "PreviewNextCidr": False 
             }
 
             if description:
@@ -20,17 +20,20 @@ def allocate_cidrs_from_pool(ipam_pool_id, prefix_lengths, description=None):
 
             response = client.allocate_ipam_pool_cidr(**params)
 
-            allocated_cidrs.append(response['IpamPoolAllocation']['Cidr'])
+            allocations.append({
+                'Cidr': response['IpamPoolAllocation']['Cidr'],
+                'AllocationId': response['IpamPoolAllocation']['IpamPoolAllocationId']
+            })
 
     except Exception as e:
-        for cidr in allocated_cidrs:
+        for allocation in allocations:
             client.release_ipam_pool_allocation(
                 IpamPoolId=ipam_pool_id,
-                Cidr=cidr
+                Cidr=allocation['Cidr']
             )
         raise e
 
-    return allocated_cidrs
+    return allocations
 
 def allocate_subnets_for_config(all_cidrs, config, last_allocated=None):
     if last_allocated is None:
@@ -60,13 +63,15 @@ def allocate_subnets_for_config(all_cidrs, config, last_allocated=None):
 
     return result
 
-def destroy_allocation(ipam_pool_id, allocated_cidrs):
+def destroy_allocation(ipam_pool_id, allocation_details):
     client = boto3.client('ec2')
-    for cidr in allocated_cidrs:
+    for allocation in allocation_details:
         client.release_ipam_pool_allocation(
             IpamPoolId=ipam_pool_id,
-            Cidr=cidr
+            IpamPoolAllocationId=allocation["allocation_id"],
+            Cidr=allocation["cidr"]
         )
+
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
@@ -89,17 +94,31 @@ if __name__ == "__main__":
         # If primary_cidr or secondary_cidrs aren't provided, allocate them
         if not primary_cidr:
             primary_netmask_int = int(input_data["primary_netmask"])
-            primary_cidr = allocate_cidrs_from_pool(ipam_pool_id, [primary_netmask_int])[0]
-
+            primary_cidr_allocation = allocate_cidrs_from_pool(ipam_pool_id, [primary_netmask_int])[0]
+            primary_cidr = primary_cidr_allocation["Cidr"]
       
         if not secondary_cidrs:
             secondary_netmasks_string = input_data.get("secondary_netmasks")
             secondary_netmasks = json.loads(secondary_netmasks_string)
             secondary_netmasks = [int(netmask) for netmask in secondary_netmasks]
 
-            secondary_cidrs = allocate_cidrs_from_pool(ipam_pool_id, secondary_netmasks)
+            secondary_cidrs_allocations = allocate_cidrs_from_pool(ipam_pool_id, secondary_netmasks)
+            secondary_cidrs = [allocation["Cidr"] for allocation in secondary_cidrs_allocations]
 
         all_cidrs = [primary_cidr] + secondary_cidrs
+
+        all_allocations = []
+        if primary_cidr_allocation:
+            all_allocations.append(primary_cidr_allocation)
+        all_allocations.extend(secondary_cidrs_allocations)
+
+        allocation_details = [
+            {
+                "allocation_id": allocation["AllocationId"],
+                "cidr": allocation["Cidr"]
+            }
+            for allocation in all_allocations
+        ]
 
         # Allocate subnets
         last_allocated = {}
@@ -108,7 +127,7 @@ if __name__ == "__main__":
         intra = allocate_subnets_for_config(all_cidrs, subnet_configurations["intra"], last_allocated) if subnet_configurations.get("intra") else []
         redshift = allocate_subnets_for_config(all_cidrs, subnet_configurations["redshift"], last_allocated) if subnet_configurations.get("redshift") else []
         database = allocate_subnets_for_config(all_cidrs, subnet_configurations["database"], last_allocated) if subnet_configurations.get("database") else []
-
+        
         result = {
             "primary_cidr": primary_cidr,
             "secondary_cidrs": ','.join(secondary_cidrs),
@@ -117,13 +136,16 @@ if __name__ == "__main__":
             "intra_subnets": ','.join(intra),
             "redshift_subnets": ','.join(redshift),
             "database_subnets": ','.join(database),
+            "allocation_details": json.dumps(allocation_details)
         }
+
         print(json.dumps(result))
 
     elif operation == "destroy-allocation":
-        allocated_cidrs = input_data.get("allocated_cidrs", [])
-        destroy_allocation(ipam_pool_id, allocated_cidrs)
-        print("Allocations destroyed.")
+        allocation_details = json.loads(input_data.get("allocation_details"))
+        destroy_allocation(ipam_pool_id, allocation_details)
+        print(json.dumps({}))
+
 
     else:
         print(f"Unknown operation: {operation}")
